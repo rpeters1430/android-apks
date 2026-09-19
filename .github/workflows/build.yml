@@ -21,6 +21,11 @@ on:
         description: Optional expected SHA-256 for a manually supplied APK
         required: false
         type: string
+      allow_unsupported_version:
+        description: Build even if the patches do not list this app version as supported
+        required: true
+        default: false
+        type: boolean
       publish_release:
         description: Publish a GitHub Release
         required: true
@@ -68,6 +73,9 @@ jobs:
       contents: write
     env:
       GITHUB_TOKEN: ${{ github.token }}
+      RELEASE_REPO: ${{ matrix.release_repo || github.repository }}
+      # Apps with publish.repo release to that repo, which needs a PAT with contents:write.
+      GH_TOKEN: ${{ matrix.release_repo && secrets.PUBLISH_TOKEN || github.token }}
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -89,6 +97,7 @@ jobs:
         run: |
           args=(build --app "${{ matrix.app }}" --work-dir "$RUNNER_TEMP/patch-hub")
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then args+=(--allow-disabled); fi
+          [[ "${{ inputs.allow_unsupported_version }}" != "true" ]] || args+=(--allow-unsupported-version)
           [[ -z "$UPSTREAM_APK_URL" ]] || args+=(--upstream-apk-url "$UPSTREAM_APK_URL")
           [[ -z "$UPSTREAM_VERSION" ]] || args+=(--upstream-version "$UPSTREAM_VERSION")
           [[ -z "$UPSTREAM_SHA256" ]] || args+=(--upstream-sha256 "$UPSTREAM_SHA256")
@@ -108,7 +117,7 @@ jobs:
         env:
           TAG: ${{ steps.build.outputs.tag }}
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+          if gh release view "$TAG" -R "$RELEASE_REPO" >/dev/null 2>&1; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
       - name: Publish new release
         if: ${{ (github.event_name == 'schedule' || inputs.publish_release) && steps.existing.outputs.exists == 'false' }}
         env:
@@ -120,7 +129,7 @@ jobs:
           CHECKSUMS: ${{ steps.build.outputs.checksums }}
           MORPHE_RESULT: ${{ steps.build.outputs.morphe_result }}
         run: |
-          gh release create "$TAG" "$APK" "$BUILD_INFO" "$CHECKSUMS" "$MORPHE_RESULT" --title "$APP_NAME $VERSION" --notes "Automated patched build. Verify checksums and review build-info.json before installation."
+          gh release create -R "$RELEASE_REPO" "$TAG" "$APK" "$BUILD_INFO" "$CHECKSUMS" "$MORPHE_RESULT" --title "$APP_NAME $VERSION" --notes "Automated patched build. Verify checksums and review build-info.json before installation."
       - name: Replace existing release assets
         if: ${{ inputs.publish_release && inputs.force_rebuild && steps.existing.outputs.exists == 'true' }}
         env:
@@ -129,7 +138,7 @@ jobs:
           BUILD_INFO: ${{ steps.build.outputs.build_info }}
           CHECKSUMS: ${{ steps.build.outputs.checksums }}
           MORPHE_RESULT: ${{ steps.build.outputs.morphe_result }}
-        run: gh release upload "$TAG" "$APK" "$BUILD_INFO" "$CHECKSUMS" "$MORPHE_RESULT" --clobber
+        run: gh release upload -R "$RELEASE_REPO" "$TAG" "$APK" "$BUILD_INFO" "$CHECKSUMS" "$MORPHE_RESULT" --clobber
       - name: Report unchanged release
         if: ${{ steps.existing.outputs.exists == 'true' && !(inputs.publish_release && inputs.force_rebuild) }}
         run: echo "Release ${{ steps.build.outputs.tag }} already exists; nothing changed."

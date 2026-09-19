@@ -1,0 +1,24 @@
+{
+  "id": "reddit",
+  "name": "Reddit",
+  "package": "com.reddit.frontpage",
+  "enabled": false,
+  "redistribute": false,
+  "source": {
+    "type": "manual"
+  },
+  "patches": [
+    {
+      "repo": "MorpheApp/morphe-patches",
+      "asset_regex": "^patches-[0-9.]+\\.mpp$"
+    }
+  ],
+  "publish": {
+    "repo": "rpeters1430/android-apks-private"
+  },
+  "selection": {
+    "exclusive": false,
+    "enable": [],
+    "disable": []
+  }
+}

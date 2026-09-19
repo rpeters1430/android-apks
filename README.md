@@ -153,3 +153,33 @@ python3 -m unittest discover -s tests -v
 
 The implementation uses Python's standard library, so validation requires no package
 installation.
+
+## Proprietary apps (YouTube, YouTube Music, Reddit)
+
+`apps/youtube.json`, `apps/youtube-music.json` and `apps/reddit.json` use
+`"source": {"type": "manual"}`. There is no upstream release feed, so:
+
+- scheduled runs skip them; run **Build patched APK** manually with `upstream_apk_url`
+  (an HTTPS APK you are authorized to use) whenever you want a new build;
+- the build reads package and version from the APK (needs `aapt2`, present on GitHub
+  runners), rejects a package mismatch, and rejects versions the patch bundle does not
+  list as supported (override with `allow_unsupported_version`);
+- the APK must be a single `.apk`, not an `.apkm`/`.xapk` bundle.
+
+Their `publish.repo` sends releases to a separate **private** repository. Create it, and add
+a fine-grained token with *Contents: read and write* on that repo as the `PUBLISH_TOKEN`
+secret. Edit `publish.repo` to match your repository name. To follow a private repo,
+Obtainium needs a GitHub token in its settings.
+
+Patched YouTube/YT Music installs without root generally need
+[MicroG-RE](https://github.com/MorpheApp/MicroG-RE) installed as well.
+
+### Obtainium import file
+
+```bash
+python3 scripts/patch_hub.py obtainium --repository rpeters1430/android-apks > obtainium.json
+```
+
+This lists every enabled app with an `apkFilterRegEx` for its `<id>-patched.apk`. If the
+patched app has a different package name than the original, set `patched_package` in its
+app definition.

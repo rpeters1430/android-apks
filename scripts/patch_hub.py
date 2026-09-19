@@ -32,8 +32,10 @@ def read_json(path: Path) -> dict[str, Any]:
 def validate_release_source(source: Any, location: str, apk: bool = False) -> None:
     if not isinstance(source, dict):
         raise HubError(f"{location} must be an object")
-    if apk and source.get("type") != "github-release":
-        raise HubError(f"{location}.type must be github-release")
+    if apk and source.get("type") not in ("github-release", "manual"):
+        raise HubError(f"{location}.type must be github-release or manual")
+    if apk and source["type"] == "manual":
+        return  # supplied at run time via workflow inputs; nothing else to validate
     if not isinstance(source.get("repo"), str) or not REPO_RE.fullmatch(source["repo"]):
         raise HubError(f"{location}.repo must be owner/repository")
     pattern = source.get("asset_regex")
@@ -69,6 +71,11 @@ def validate_app(app: dict[str, Any], path: Path) -> None:
         raise HubError(f"{path}: patches must be a non-empty array")
     for index, source in enumerate(patches):
         validate_release_source(source, f"{path}: patches[{index}]")
+    publish = app.get("publish", {})
+    if not isinstance(publish, dict):
+        raise HubError(f"{path}: publish must be an object")
+    if "repo" in publish and (not isinstance(publish["repo"], str) or not REPO_RE.fullmatch(publish["repo"])):
+        raise HubError(f"{path}: publish.repo must be owner/repository")
     selection = app.get("selection", {})
     if not isinstance(selection, dict):
         raise HubError(f"{path}: selection must be an object")
@@ -173,6 +180,34 @@ def android_tool(name: str) -> str | None:
     return None
 
 
+def apk_badging(apk: Path) -> tuple[str, str] | None:
+    """Return (package, versionName) from the APK manifest, or None if aapt2 is unavailable."""
+    aapt2 = android_tool("aapt2")
+    if not aapt2: return None
+    text = subprocess.run([aapt2, "dump", "badging", str(apk)], capture_output=True, text=True, check=False).stdout
+    match = re.search(r"package: name='([^']+)'.*?versionName='([^']*)'", text)
+    return (match.group(1), match.group(2)) if match else None
+
+
+def supported_versions(desktop: Path, patches: list[Path], package: str) -> set[str]:
+    """App versions the patch bundles declare support for (empty set = no version restriction)."""
+    command = ["java", "-jar", str(desktop), "list-patches", "-p", "-v", "-d=false", "-i=false", "-f", package]
+    for path in patches: command.extend(["--patches", str(path)])
+    output = subprocess.run(command, capture_output=True, text=True, check=True).stdout
+    return parse_supported_versions(output, package)
+
+
+def parse_supported_versions(output: str, package: str) -> set[str]:
+    versions, in_package, in_versions = set(), False, False
+    for line in re.sub(r"\x1b\[[0-9;]*m", "", output).splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Package name:"): in_package, in_versions = stripped.split(":", 1)[1].strip() == package, False
+        elif stripped.startswith("Compatible versions:"): in_versions = in_package
+        elif stripped.startswith("Name:"): in_package = in_versions = False
+        elif in_versions and stripped: versions.add(stripped)
+    return versions
+
+
 def slug(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-.")[:80] or "unknown"
 
@@ -200,6 +235,8 @@ def build(args: argparse.Namespace) -> None:
     desktop_meta = release_asset(config["morphe_desktop"], token)
     desktop = work / "morphe-desktop.jar"
     desktop_meta["sha256"] = download(desktop_meta["url"], desktop, config["morphe_desktop"].get("sha256"))
+    if app["source"]["type"] == "manual" and not args.upstream_apk_url:
+        raise HubError(f"{app['id']} uses a manual source; supply --upstream-apk-url (and --upstream-version)")
     if args.upstream_apk_url:
         upstream_meta = {"repo": "manual", "release_tag": args.upstream_version or "manual", "name": f"{app['id']}-upstream.apk", "url": safe_manual_url(args.upstream_apk_url)}
         expected_apk_sha = args.upstream_sha256
@@ -213,6 +250,20 @@ def build(args: argparse.Namespace) -> None:
         metadata = release_asset(source, token); path = work / f"patches-{index}.mpp"
         metadata["sha256"] = download(metadata["url"], path, source.get("sha256"))
         patch_paths.append(path); patch_meta.append(metadata)
+
+    badging = apk_badging(upstream)
+    if badging:
+        package, version = badging
+        if package != app["package"]:
+            raise HubError(f"Upstream APK is {package}, but {app['id']} expects {app['package']}")
+        if upstream_meta["release_tag"] == "manual": upstream_meta["release_tag"] = version
+        elif upstream_meta["release_tag"] != version: print(f"::warning::supplied version {upstream_meta['release_tag']} differs from APK versionName {version}")
+        upstream_meta["version_name"] = version
+    else: print("::warning::aapt2 not found; package/version of the upstream APK not verified")
+    tested = upstream_meta.get("version_name") or upstream_meta["release_tag"]
+    allowed = supported_versions(desktop, patch_paths, app["package"])
+    if allowed and tested not in allowed and not args.allow_unsupported_version:
+        raise HubError(f"{app['package']} {tested} is not supported by the patches; supported: {', '.join(sorted(allowed))}")
 
     required = ["ANDROID_KEYSTORE_BASE64", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS", "ANDROID_KEY_PASSWORD"]
     missing = [key for key in required if not os.environ.get(key)]
@@ -254,8 +305,20 @@ def build(args: argparse.Namespace) -> None:
 def matrix(app: str | None) -> None:
     apps = load_apps()
     if app and app not in apps: raise HubError(f"Unknown app id {app!r}")
-    selected = [app] if app else [key for key, value in apps.items() if value["enabled"]]
-    print(json.dumps({"include": [{"app": key} for key in selected]}, separators=(",", ":")))
+    # Scheduled runs skip manual-source apps: they cannot fetch their own upstream APK.
+    selected = [app] if app else [key for key, value in apps.items() if value["enabled"] and value["source"]["type"] != "manual"]
+    print(json.dumps({"include": [{"app": key, "release_repo": apps[key].get("publish", {}).get("repo", "")} for key in selected]}, separators=(",", ":")))
+
+
+def obtainium(repository: str) -> None:
+    """Print an Obtainium import file for every enabled app, pointing at its release feed."""
+    entries = []
+    for app in load_apps().values():
+        if not app["enabled"]: continue
+        repo = app.get("publish", {}).get("repo") or repository
+        settings = {"includePrereleases": False, "apkFilterRegEx": f"^{re.escape(app['id'])}-patched\\.apk$", "trackOnly": False}
+        entries.append({"id": app.get("patched_package", app["package"]), "url": f"https://github.com/{repo}", "author": repo.split("/")[0], "name": app["name"], "preferredApkIndex": 0, "additionalSettings": json.dumps(settings)})
+    print(json.dumps({"apps": entries}, indent=2))
 
 
 def main() -> int:
@@ -264,11 +327,13 @@ def main() -> int:
     matrix_parser = commands.add_parser("matrix"); matrix_parser.add_argument("--app")
     build_parser = commands.add_parser("build")
     build_parser.add_argument("--app", required=True); build_parser.add_argument("--work-dir", required=True)
-    build_parser.add_argument("--upstream-apk-url"); build_parser.add_argument("--upstream-version"); build_parser.add_argument("--upstream-sha256"); build_parser.add_argument("--allow-disabled", action="store_true")
+    build_parser.add_argument("--upstream-apk-url"); build_parser.add_argument("--upstream-version"); build_parser.add_argument("--upstream-sha256"); build_parser.add_argument("--allow-disabled", action="store_true"); build_parser.add_argument("--allow-unsupported-version", action="store_true")
+    obtainium_parser = commands.add_parser("obtainium"); obtainium_parser.add_argument("--repository", required=True, help="owner/repo hosting the releases")
     args = parser.parse_args()
     try:
         if args.command == "validate": validate_all()
         elif args.command == "matrix": matrix(args.app)
+        elif args.command == "obtainium": obtainium(args.repository)
         else: build(args)
     except (HubError, subprocess.CalledProcessError) as exc:
         print(f"error: {exc}", file=sys.stderr); return 1

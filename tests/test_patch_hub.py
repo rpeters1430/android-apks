@@ -35,6 +35,24 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(patch_hub.HubError, "query"):
             patch_hub.safe_manual_url("https://example.com/app.apk?token=secret")
 
+    def test_manual_source_needs_no_repo(self):
+        app = self.app(); app["source"] = {"type": "manual"}
+        patch_hub.validate_app(app, Path("test-app.json"))
+
+    def test_publish_repo_must_be_owner_slash_name(self):
+        app = self.app(); app["publish"] = {"repo": "not a repo"}
+        with self.assertRaisesRegex(patch_hub.HubError, "publish.repo"):
+            patch_hub.validate_app(app, Path("test-app.json"))
+
+    def test_parse_supported_versions_for_one_package(self):
+        output = chr(10).join([
+            "Name: Hide ads", "Enabled: true", "Compatible packages:",
+            "	Package name: com.a", "	Compatible versions:", "		1.0", "		2.0", "",
+            "Name: Other", "Enabled: true", "Compatible packages:",
+            "	Package name: com.b", "	Compatible versions:", "		9.9",
+        ])
+        self.assertEqual({"1.0", "2.0"}, patch_hub.parse_supported_versions(output, "com.a"))
+
     def test_slug_is_release_safe(self):
         self.assertEqual("v1.2-beta", patch_hub.slug("v1.2 beta"))
 
