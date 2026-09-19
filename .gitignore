@@ -1,0 +1,8 @@
+work/
+*.jks
+*.keystore
+*.apk
+*.mpp
+*.jar
+__pycache__/
+*.pyc
