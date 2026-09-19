@@ -1,0 +1,23 @@
+{
+  "id": "example",
+  "name": "Example App",
+  "package": "com.example.app",
+  "enabled": false,
+  "redistribute": false,
+  "source": {
+    "type": "github-release",
+    "repo": "owner/repository",
+    "asset_regex": "^example-[0-9.]+\\.apk$"
+  },
+  "patches": [
+    {
+      "repo": "MorpheApp/morphe-patches",
+      "asset_regex": "^patches-[0-9.]+\\.mpp$"
+    }
+  ],
+  "selection": {
+    "exclusive": false,
+    "enable": [],
+    "disable": []
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "morphe_desktop": {
+    "repo": "MorpheApp/morphe-desktop",
+    "asset_regex": "^morphe-desktop-[0-9.]+-all\\.jar$"
+  }
+}
