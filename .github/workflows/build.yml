@@ -110,7 +110,7 @@ jobs:
             ${{ steps.build.outputs.build_info }}
             ${{ steps.build.outputs.checksums }}
             ${{ steps.build.outputs.morphe_result }}
-          retention-days: 7
+          retention-days: 3
           if-no-files-found: error
       - id: existing
         if: ${{ github.event_name == 'schedule' || inputs.publish_release }}
